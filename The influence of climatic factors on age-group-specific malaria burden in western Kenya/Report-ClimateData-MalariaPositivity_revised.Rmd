@@ -1,0 +1,947 @@
+---
+title: "Effect of climate variables on the age-group specific malaria burden"
+author: "Felix Pabon-Rodriguez"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+options(tinytex.verbose = TRUE)
+
+library(dplyr) 
+library(lubridate)
+library(ggplot2)
+library(readxl)
+library(data.table)
+library(tidyr)
+library(lme4)
+library(glmmADMB)
+library(R2admb)
+library(sjPlot)
+library(knitr)
+library(lmtest)
+library(ggpubr)
+library(gridExtra)
+library(reshape2)
+library(see)
+library(MachineShop)
+```
+
+# Map of Study Sites and Clinical Facilities
+
+\begin{center}
+\includegraphics[width=\textwidth]{KenyaMap-Sites.jpg}
+\end{center}
+
+\newpage 
+
+# Reading Malaria Positivity and Climate Variables per Sites
+
+```{r}
+# Data Site 1 (Gobei/Lwak)
+s1_2022_malaria <- read_xlsx(path = "./Data per Sites/Site1_Lwak_Gobei_MalariaPositivity.xlsx",
+                   col_names = TRUE,sheet = 1)
+s1_2023_malaria <- read_xlsx(path = "./Data per Sites/Site1_Lwak_Gobei_MalariaPositivity.xlsx",
+                   col_names = TRUE,sheet = 2)
+s1_temp <- read_xlsx(path = "./Data per Sites/Site1_Oyude_Gobei_Temp_v2.xlsx",
+                    col_names = TRUE, sheet = 1, na = c(" ", "", "*"))
+s1_prec <- read_xlsx(path = "./Data per Sites/Site1-Bondo_Gobei_Precip_v2.xlsx",
+                    col_names = TRUE, sheet = 1, na = c(" ", "", "*"))
+
+# Data Site 2 (Kadengue)
+s2_2022_malaria <- read_xlsx(path = "./Data per Sites/Site2-Kadenge_MalariaPositivity.xlsx",
+                   col_names = TRUE,sheet = 1)
+s2_2023_malaria <- read_xlsx(path = "./Data per Sites/Site2-Kadenge_MalariaPositivity.xlsx",
+                   col_names = TRUE,sheet = 2)
+s2_temp <- read_xlsx(path = "./Data per Sites/Site2_LakeAgro_Kadenge_Temp_v2.xlsx",
+                   col_names = TRUE,sheet = 1, na = c(" ", "", "*"))
+s2_prec <- read_xlsx(path = "./Data per Sites/Site2-Kadenge_Precip.xlsx",
+                   col_names = TRUE,sheet = 1, na = c(" ", "", "*"))
+
+# Data Site 2 (Uyawi)
+s3_2022_malaria <- read_xlsx(path = "./Data per Sites/Site3-Uyawi_MalariaPositivity.xlsx",
+                   col_names = TRUE,sheet = 1)
+s3_2023_malaria <- read_xlsx(path = "./Data per Sites/Site3-Uyawi_MalariaPositivity.xlsx",
+                   col_names = TRUE,sheet = 2)
+s3_temp <- read_xlsx(path = "./Data per Sites/Site3_Usenge_Uyawi_Temp_v2.xlsx",
+                   col_names = TRUE,sheet = 1, na = c(" ", "", "*"))
+s3_prec <- read_xlsx(path = "./Data per Sites/Site3-Uyawi_Precip.xlsx",
+                   col_names = TRUE,sheet = 1, na = c(" ", "", "*"))
+
+```
+
+\newpage
+
+# Data Processing (Season, Age Groups, Mean Temp, Mean Precip, Lag Values)
+
+```{r}
+## Season descriptions
+seasons <- data.frame(Month = colnames(s1_2022_malaria)[-1],
+                      Season = c("Dry S1", #ENE
+                                 "Dry S1", #FEB
+                                 "Heavy rain", #MAR
+                                 "Heavy rain", #APR
+                                 "Dry S2", #MAY
+                                 "Dry S2", #JUN
+                                 "Dry S2", #JUL
+                                 "Moderate rain", #AUG
+                                 "Moderate rain", #SEPT
+                                 "Dry S3", #OCT
+                                 "Dry S3", #NOV
+                                 "Dry S3")) #DEC
+
+# data frame to determine start and end for rectangular regions in ggplot
+df <- data.frame(Season = c("Moderate rain","Dry S1", "Heavy rain", 
+                            "Dry S2", "Moderate rain", "Dry S3", 
+                            "Moderate rain"),
+                 Start = c(0,1,3,5,8,10,12),
+                 End = c(1,3,5,8,10,12,13))
+
+##########
+## Site 1
+##########
+
+# temperature and precipitation
+s1_temp$Date <- as.Date(s1_temp$Date, "%m/%d/%Y")
+s1_temp$month <- month(s1_temp$Date)
+s1_temp$year <- year(s1_temp$Date)
+ 
+s1_mean_temp <- s1_temp %>% 
+  group_by(year,month) %>% 
+  summarize(mean_temp = mean(Ave_Temperature_C ,na.rm = TRUE))
+s1_mean_temp$Lag1_Temp <- lag(s1_mean_temp$mean_temp, 1)
+s1_mean_temp$Lag2_Temp <- lag(s1_mean_temp$mean_temp, 2)
+
+s1_prec$month <- month(s1_prec$Date)
+colnames(s1_prec)[2:5] <- c("year2020", "year2021","year2022", "year2023")
+
+s1_mean_prec_2021 <- s1_prec %>% 
+  group_by(month) %>% 
+  summarize(mean_prec = mean(year2021,na.rm = TRUE))
+s1_mean_prec_2021$year <- rep(2021,nrow(s1_mean_prec_2021))
+
+s1_mean_prec_2022 <- s1_prec %>% 
+  group_by(month) %>% 
+  summarize(mean_prec = mean(year2022,na.rm = TRUE))
+s1_mean_prec_2022$year <- rep(2022,nrow(s1_mean_prec_2022))
+
+s1_mean_prec_2023 <- s1_prec %>% 
+  group_by(month) %>% 
+  summarize(mean_prec = mean(year2023,na.rm = TRUE))
+s1_mean_prec_2023$year <- rep(2023,nrow(s1_mean_prec_2023))
+
+s1_mean_prec <- rbind(s1_mean_prec_2021, 
+                      s1_mean_prec_2022,
+                      s1_mean_prec_2023)
+s1_mean_prec$Lag1_Prec <- lag(s1_mean_prec$mean_prec, 1)
+s1_mean_prec$Lag2_Prec <- lag(s1_mean_prec$mean_prec, 2)
+
+s1_mean_prec <- s1_mean_prec[s1_mean_prec$year %in% c(2022,2023),
+                             c("year","month","mean_prec","Lag1_Prec","Lag2_Prec")]
+s1_mean_temp <- s1_mean_temp[s1_mean_temp$year %in% c(2022,2023),]
+
+# malaria positivity
+s1_d2022 <- s1_2022_malaria
+s1_grouped2022 <- as.data.frame(rbind(apply(s1_d2022[1:5,2:13],2,sum),
+                                   apply(s1_d2022[6:41,2:13],2,sum),
+                                   apply(s1_d2022[6:15,2:13],2,sum)))
+row.names(s1_grouped2022) <- c("<=5", ">5", "6-15") 
+
+s1_d2023 <- s1_2023_malaria
+s1_grouped2023 <- as.data.frame(rbind(apply(s1_d2023[1:5,2:13],2,sum),
+                                   apply(s1_d2023[6:41,2:13],2,sum),
+                                   apply(s1_d2023[6:15,2:13],2,sum)))
+row.names(s1_grouped2023) <- c("<=5", ">5", "6-15") 
+
+# long formatted data of malaria positivity
+s1_long2022 <- as.data.frame(melt(setDT(s1_grouped2022)))
+colnames(s1_long2022) <- c("Month","Count")
+s1_long2022$AgeGroup <- rep(c("<=5 years old", 
+                           ">5 years old", 
+                           "6-15 years old"),12)
+s1_long2022 <- merge(s1_long2022,seasons,by = "Month")
+s1_long2022$Year <- rep(2022,length(s1_long2022))
+
+s1_long2023 <- as.data.frame(melt(setDT(s1_grouped2023)))
+colnames(s1_long2023) <- c("Month","Count")
+s1_long2023$AgeGroup <- rep(c("<=5 years old", 
+                           ">5 years old", 
+                           "6-15 years old"),12)
+s1_long2023 <- merge(s1_long2023,seasons,by = "Month")
+s1_long2023$Year <- rep(2023,length(s1_long2023))
+
+s1_malaria <- rbind(s1_long2022,s1_long2023)
+
+##########
+## Site 2
+##########
+
+# temperature and precipitation
+s2_temp$Date <- as.Date(s2_temp$Date, "%m/%d/%Y")
+s2_temp$month <- month(s2_temp$Date)
+s2_temp$year <- year(s2_temp$Date)
+ 
+s2_mean_temp <- s2_temp %>% 
+  group_by(year,month) %>% 
+  summarize(mean_temp = mean(Ave_Temperature_C,na.rm = TRUE))
+s2_mean_temp$Lag1_Temp <- lag(s2_mean_temp$mean_temp, 1)
+s2_mean_temp$Lag2_Temp <- lag(s2_mean_temp$mean_temp, 2)
+
+s2_prec$month <- month(s2_prec$Date)
+colnames(s2_prec)[3:5] <- c("year2021","year2022", "year2023")
+
+s2_mean_prec_2021 <- s2_prec %>% 
+  group_by(month) %>% 
+  summarize(mean_prec = mean(year2021,na.rm = TRUE))
+s2_mean_prec_2021$year <- rep(2021,nrow(s2_mean_prec_2021))
+
+s2_mean_prec_2022 <- s2_prec %>% 
+  group_by(month) %>% 
+  summarize(mean_prec = mean(year2022,na.rm = TRUE))
+s2_mean_prec_2022$year <- rep(2022,nrow(s2_mean_prec_2022))
+
+s2_mean_prec_2023 <- s2_prec %>% 
+  group_by(month) %>% 
+  summarize(mean_prec = mean(year2023,na.rm = TRUE))
+s2_mean_prec_2023$year <- rep(2023,nrow(s2_mean_prec_2023))
+
+s2_mean_prec <- rbind(s2_mean_prec_2021, 
+                      s2_mean_prec_2022,
+                      s2_mean_prec_2023)
+s2_mean_prec$Lag1_Prec <- lag(s2_mean_prec$mean_prec, 1)
+s2_mean_prec$Lag2_Prec <- lag(s2_mean_prec$mean_prec, 2)
+
+s2_mean_prec <- s2_mean_prec[s2_mean_prec$year %in% c(2022,2023),]
+s2_mean_temp <- s2_mean_temp[s2_mean_temp$year %in% c(2022,2023),]
+
+# malaria positivity
+s2_d2022 <- s2_2022_malaria
+s2_grouped2022 <- as.data.frame(rbind(apply(s2_d2022[1:5,2:13],2,sum),
+                                   apply(s2_d2022[6:41,2:13],2,sum),
+                                   apply(s2_d2022[6:15,2:13],2,sum)))
+row.names(s2_grouped2022) <- c("<=5", ">5", "6-15") 
+
+s2_d2023 <- s2_2023_malaria
+s2_grouped2023 <- as.data.frame(rbind(apply(s2_d2023[1:5,2:13],2,sum),
+                                   apply(s2_d2023[6:41,2:13],2,sum),
+                                   apply(s2_d2023[6:15,2:13],2,sum)))
+row.names(s2_grouped2023) <- c("<=5", ">5", "6-15") 
+
+# long formatted data of malaria positivity
+s2_long2022 <- as.data.frame(melt(setDT(s2_grouped2022)))
+colnames(s2_long2022) <- c("Month","Count")
+s2_long2022$AgeGroup <- rep(c("<=5 years old", 
+                           ">5 years old", 
+                           "6-15 years old"),12)
+s2_long2022 <- merge(s2_long2022,seasons,by = "Month")
+s2_long2022$Year <- rep(2022,length(s2_long2022))
+
+s2_long2023 <- as.data.frame(melt(setDT(s2_grouped2023)))
+colnames(s2_long2023) <- c("Month","Count")
+s2_long2023$AgeGroup <- rep(c("<=5 years old", 
+                           ">5 years old", 
+                           "6-15 years old"),12)
+s2_long2023 <- merge(s2_long2023,seasons,by = "Month")
+s2_long2023$Year <- rep(2023,length(s2_long2023))
+
+s2_malaria <- rbind(s2_long2022,s2_long2023)
+
+
+##########
+## Site 3
+##########
+
+# temperature and precipitation
+s3_temp$Date <- as.Date(s3_temp$Date, "%m/%d/%Y")
+s3_temp$month <- month(s3_temp$Date)
+s3_temp$year <- year(s3_temp$Date)
+ 
+s3_mean_temp <- s3_temp %>% 
+  group_by(year,month) %>% 
+  summarize(mean_temp = mean(Ave_Temperature_C,na.rm = TRUE))
+s3_mean_temp$Lag1_Temp <- lag(s3_mean_temp$mean_temp, 1)
+s3_mean_temp$Lag2_Temp <- lag(s3_mean_temp$mean_temp, 2)
+
+s3_prec$Date <- as.Date(s3_prec$Date, "%m/%d/%Y")
+s3_prec$month <- month(s3_prec$Date)
+colnames(s3_prec)[3:5] <- c("year2021","year2022", "year2023")
+
+s3_mean_prec_2021 <- s3_prec %>% 
+  group_by(month) %>% 
+  summarize(mean_prec = mean(year2021,na.rm = TRUE))
+s3_mean_prec_2021$year <- rep(2021,nrow(s3_mean_prec_2021))
+
+s3_prec$year2022 <- as.numeric(s3_prec$year2022)
+s3_mean_prec_2022 <- s3_prec %>% 
+  group_by(month) %>% 
+  summarize(mean_prec = mean(year2022,na.rm = TRUE))
+s3_mean_prec_2022$year <- rep(2022,nrow(s3_mean_prec_2022))
+
+s3_mean_prec_2023 <- s3_prec %>% 
+  group_by(month) %>% 
+  summarize(mean_prec = mean(year2023,na.rm = TRUE))
+s3_mean_prec_2023$year <- rep(2023,nrow(s3_mean_prec_2023))
+
+s3_mean_prec <- rbind(s3_mean_prec_2021, 
+                      s3_mean_prec_2022,
+                      s3_mean_prec_2023)
+s3_mean_prec$Lag1_Prec <- lag(s3_mean_prec$mean_prec, 1)
+s3_mean_prec$Lag2_Prec <- lag(s3_mean_prec$mean_prec, 2)
+
+s3_mean_prec <- s3_mean_prec[s3_mean_prec$year %in% c(2022,2023),]
+s3_mean_temp <- s3_mean_temp[s3_mean_temp$year %in% c(2022,2023),]
+
+# malaria positivity
+s3_d2022 <- s3_2022_malaria
+s3_grouped2022 <- as.data.frame(rbind(apply(s3_d2022[1:5,2:13],2,sum),
+                                   apply(s3_d2022[6:41,2:13],2,sum),
+                                   apply(s3_d2022[6:15,2:13],2,sum)))
+row.names(s3_grouped2022) <- c("<=5", ">5", "6-15") 
+
+s3_d2023 <- s3_2023_malaria
+s3_grouped2023 <- as.data.frame(rbind(apply(s3_d2023[1:5,2:13],2,sum),
+                                   apply(s3_d2023[6:41,2:13],2,sum),
+                                   apply(s3_d2023[6:15,2:13],2,sum)))
+row.names(s3_grouped2023) <- c("<=5", ">5", "6-15") 
+
+# long formatted data of malaria positivity
+s3_long2022 <- as.data.frame(melt(setDT(s3_grouped2022)))
+colnames(s3_long2022) <- c("Month","Count")
+s3_long2022$AgeGroup <- rep(c("<=5 years old", 
+                           ">5 years old", 
+                           "6-15 years old"),12)
+s3_long2022 <- merge(s3_long2022,seasons,by = "Month")
+s3_long2022$Year <- rep(2022,length(s3_long2022))
+
+s3_long2023 <- as.data.frame(melt(setDT(s3_grouped2023)))
+colnames(s3_long2023) <- c("Month","Count")
+s3_long2023$AgeGroup <- rep(c("<=5 years old", 
+                           ">5 years old", 
+                           "6-15 years old"),12)
+s3_long2023 <- merge(s3_long2023,seasons,by = "Month")
+s3_long2023$Year <- rep(2023,length(s3_long2023))
+
+s3_malaria <- rbind(s3_long2022,s3_long2023)
+```
+
+\newpage
+
+# Merge Malaria and Climate Data
+
+```{r}
+##########
+## Site 1
+##########
+
+colnames(s1_mean_prec)[1:3] <- c("Year","Month","Mean_Prec")
+colnames(s1_mean_temp)[1:3] <- c("Year","Month","Mean_Temp")
+s1_mean_prec$Month <- rep(colnames(s1_2022_malaria)[2:13],2)
+s1_mean_temp$Month <- rep(colnames(s1_2022_malaria)[2:13],2)
+
+s1_merged_data <- merge(s1_malaria,s1_mean_temp, by=c("Year","Month"))
+final_site1 <- merge(s1_merged_data,s1_mean_prec, by=c("Year","Month"))
+final_site1$Site <- rep("Site1",nrow(final_site1))
+
+##########
+## Site 2
+##########
+
+s2_mean_prec <- s2_mean_prec[,c("year","month","mean_prec","Lag1_Prec",
+                                "Lag2_Prec")]
+colnames(s2_mean_prec)[1:3] <- c("Year","Month","Mean_Prec")
+
+colnames(s2_mean_temp)[1:3] <- c("Year","Month","Mean_Temp")
+s2_mean_prec$Month <- rep(colnames(s2_2022_malaria)[2:13],2)
+s2_mean_temp$Month <- rep(colnames(s2_2022_malaria)[2:13],2)
+
+s2_merged_data <- merge(s2_malaria,s2_mean_temp, by=c("Year","Month"))
+final_site2 <- merge(s2_merged_data,s2_mean_prec, by=c("Year","Month"))
+final_site2$Site <- rep("Site2",nrow(final_site2))
+
+##########
+## Site 3
+##########
+
+s3_mean_prec <- s3_mean_prec[,c("year","month","mean_prec","Lag1_Prec",
+                                "Lag2_Prec")]
+colnames(s3_mean_prec)[1:3] <- c("Year","Month","Mean_Prec")
+
+
+colnames(s3_mean_prec)[1:3] <- c("Year","Month","Mean_Prec")
+colnames(s3_mean_temp)[1:3] <- c("Year","Month","Mean_Temp")
+s3_mean_prec$Month <- rep(colnames(s3_2022_malaria)[2:13],2)
+s3_mean_temp$Month <- rep(colnames(s3_2022_malaria)[2:13],2)
+
+s3_merged_data <- merge(s3_malaria,s3_mean_temp, by=c("Year","Month"))
+final_site3 <- merge(s3_merged_data,s3_mean_prec, by=c("Year","Month"))
+final_site3$Site <- rep("Site3",nrow(final_site3))
+
+##########
+## FINALL DATA SET
+##########
+
+analysis.data <- rbind(final_site1,
+                       final_site2,
+                       final_site3)
+```
+
+\newpage
+
+# Visualizations Age-Group Malaria Burden 
+
+```{r, fig.path='figures/'}
+# visuals for malaria positivity
+m1 <- ggplot(analysis.data[analysis.data$Year==2022,], aes(Month, Count , colour = AgeGroup)) +
+  geom_rect(data=df, aes(NULL,NULL,xmin=Start,xmax=End,fill=Season),
+            ymin=0,ymax=16000, colour="white", size=0.5, alpha=0.12) +
+  scale_fill_manual(values=c("Dry S1" = "red",
+                             "Dry S2" = "red",
+                             "Dry S3" = "red",
+                             "Moderate rain" = "green",
+                             "Heavy rain" = "blue")) +
+  geom_line(aes(Month, Count , group = AgeGroup), size= 1.5) +
+  labs(title = "2022 Malaria Positivity Data by site",
+       y = "Number of Positive Cases")+
+  scale_x_discrete(guide = guide_axis(angle = 45)) +
+  facet_grid(~Site) + 
+  scale_colour_okabeito()
+  
+
+m2 <- ggplot(analysis.data[analysis.data$Year==2023,], aes(Month, Count , colour = AgeGroup)) +
+  geom_rect(data=df, aes(NULL,NULL,xmin=Start,xmax=End,fill=Season),
+            ymin=0,ymax=16000, colour="white", size=0.5, alpha=0.12) +
+  scale_fill_manual(values=c("Dry S1" = "red",
+                             "Dry S2" = "red",
+                             "Dry S3" = "red",
+                             "Moderate rain" = "green",
+                             "Heavy rain" = "blue")) +
+  geom_line(aes(Month, Count , group = AgeGroup), size= 1.5) +
+  labs(title = "2023 Malaria Positivity Data by Site",
+       y = "Number of Positive Cases")+
+  scale_x_discrete(guide = guide_axis(angle = 45)) +
+  facet_grid(~Site) + 
+  scale_colour_okabeito()
+
+ggarrange(m1, m2, 
+          labels = c("A", "B"),
+          ncol = 1, nrow = 2,
+          common.legend = TRUE,
+          legend = "bottom")
+```
+
+\newpage
+
+# Visualizations of Climate Variables
+
+```{r, fig.path='figures/'}
+c1 <- ggplot(analysis.data, aes(x=Month, y=Mean_Temp, group=factor(Year))) +
+  geom_line(aes(x=Month, y=Mean_Temp, color= factor(Year)),size= 1.5) +
+  labs(title = "Mean Temperatures (Celsius)", color = "Year") +
+  ylab("Temperature") + xlab("Month")+
+  scale_x_discrete(guide = guide_axis(angle = 45)) +
+  facet_grid(~Site)
+
+c2 <- ggplot(analysis.data, aes(x=Month, y=Mean_Prec, group=factor(Year))) +
+  geom_line(aes(x=Month, y=Mean_Prec, color= factor(Year)),size= 1.5) +
+  labs(title = "Mean Precipitation (mm)", color = "Year") +
+  ylab("Precipitation") + xlab("Month")+
+  scale_x_discrete(guide = guide_axis(angle = 45)) +
+  facet_grid(~Site)
+
+ggarrange(c1, c2, 
+          labels = c("A", "B"),
+          ncol = 1, nrow = 2,
+          common.legend = TRUE,
+          legend = "bottom")
+
+```
+\newpage
+
+# Cases per Sites and Season
+
+```{r}
+analysis.data$Month <- as.numeric(analysis.data$Month)
+analysis.data$Season <- factor(analysis.data$Season, 
+                               levels = c("Dry S1", 
+                                          "Heavy rain", 
+                                          "Dry S2", 
+                                          "Moderate rain", 
+                                          "Dry S3"))
+analysis.data$Site <- as.factor(analysis.data$Site)
+
+df.means <- analysis.data %>% 
+  group_by(Site, AgeGroup) %>% 
+  summarise(value = mean(Count))
+
+
+g1 <- df.means %>% 
+  ggplot() +
+  aes(x = Site, y = value, color = AgeGroup) +
+  geom_line(aes(group = AgeGroup),size=1.2) +
+  geom_point(size=2)+
+  ylab("Number of Malaria Cases")+
+  ggtitle("Malaria Positivity by Sites") + 
+  ylim(20,170)+ 
+  scale_colour_okabeito()
+
+df.means2 <- analysis.data %>% 
+  group_by(Season, AgeGroup) %>% 
+  summarise(value = mean(Count))
+
+g2 <- df.means2 %>% 
+  ggplot() +
+  aes(x = Season, y = value, color = AgeGroup) +
+  geom_line(aes(group = AgeGroup),size=1.2) +
+  geom_point(size=2)+
+  ylab("Number of Malaria Cases")+
+  ggtitle("Malaria Positivity by Season") + 
+  ylim(20,170) + 
+  scale_colour_okabeito()
+
+
+ggarrange(g1, g2, 
+          labels = c("A", "B"),
+          ncol = 1, nrow = 2,
+          common.legend = TRUE,
+          legend = "bottom")
+
+```
+
+# Other Visuals
+
+```{r}
+analysis.data %>%
+  group_by(Year, AgeGroup, Site) %>%
+  summarise(
+    Number_Cases = sum(Count)
+  )
+
+analysis.data %>%
+  arrange(Site) %>%
+  group_by(Year, Site) %>%
+  summarise(
+    Number_Cases = sum(Count)
+  ) 
+```
+
+
+# Exploring Interactions
+
+```{r, fig.path='figures/'}
+
+analysis.data$Month <- as.numeric(analysis.data$Month)
+
+mod1.data <- analysis.data[analysis.data$AgeGroup %in% c("<=5 years old",
+                                                         ">5 years old"),]
+mod1.data$Season <- factor(mod1.data$Season, 
+                           levels = c("Dry S1", 
+                                      "Heavy rain", 
+                                      "Dry S2", 
+                                      "Moderate rain", 
+                                      "Dry S3"))
+mod1.data$Site <- as.factor(mod1.data$Site)
+
+interaction.plot(
+  x.factor = mod1.data$Site,
+  trace.factor = mod1.data$AgeGroup,
+  response = mod1.data$Count,
+  fun = median,
+  ylab = "Number of Malaria Cases",
+  xlab = "Sites",
+  trace.label = "Age group",
+  col = c("green4","blue4"),
+  lyt = 1,
+  lwd = 3,
+  main = "Malaria Positivity by Sites")
+
+interaction.plot(
+  x.factor = mod1.data$Season,
+  trace.factor = mod1.data$AgeGroup,
+  response = mod1.data$Count,
+  fun = median,
+  ylab = "Number of Malaria Cases",
+  xlab = "Season",
+  trace.label = "Age group",
+  col = c("green4","blue4"),
+  lyt = 1,
+  lwd = 3,
+  main = "Malaria Positivity by Seasons")
+
+mod2.data <- analysis.data[analysis.data$AgeGroup %in% c("<=5 years old",
+                                                         "6-15 years old"),]
+mod2.data$Season <- factor(mod2.data$Season, 
+                           levels = c("Dry S1", 
+                                      "Heavy rain", 
+                                      "Dry S2", 
+                                      "Moderate rain", 
+                                      "Dry S3"))
+mod2.data$Site <- as.factor(mod2.data$Site)
+
+interaction.plot(
+  x.factor = mod2.data$Site,
+  trace.factor = mod2.data$AgeGroup,
+  response = mod2.data$Count,
+  fun = median,
+  ylab = "Number of Malaria Cases",
+  xlab = "Sites",
+  trace.label = "Age group",
+  col = c("green4","blue4"),
+  lyt = 1,
+  lwd = 3,
+  main = "Malaria Positivity by Sites")
+
+interaction.plot(
+  x.factor = mod2.data$Season,
+  trace.factor = mod2.data$AgeGroup,
+  response = mod2.data$Count,
+  fun = median,
+  ylab = "Number of Malaria Cases",
+  xlab = "Season",
+  trace.label = "Age group",
+  col = c("green4","blue4"),
+  lyt = 1,
+  lwd = 3,
+  main = "Malaria Positivity by Seasons")
+```
+
+Comments:
+
+- Based on interaction plots between Age group and Sites, there is a justification (as suggested in the second plot) to add an interaction effect for the comparison between <5 and 6-15 years old individuals but not for the other comparison (as shown in first plot). 
+
+\newpage
+
+# Exploring Goodness of Fit for Data
+
+```{r, fig.path='figures/'}
+fit.p <- glmmadmb(Count ~ AgeGroup + (1|Site),
+                 data = mod1.data, 
+                 zeroInflation=FALSE,
+                 family="poisson", 
+                 link="log")
+fit.pzif <- glmmadmb(Count ~ AgeGroup + (1|Site),
+                    data = mod1.data, 
+                    zeroInflation=TRUE,
+                    family="poisson", 
+                    link="log")
+fit.nb <- glmmadmb(Count ~ AgeGroup + (1|Site),
+                  data = mod1.data,
+                  zeroInflation=FALSE,
+                  family="nbinom", 
+                  link="log")
+fit.zifnb <- glmmadmb(Count ~ AgeGroup + (1|Site),
+                  data = mod1.data,
+                  zeroInflation=TRUE,
+                  family="nbinom", 
+                  link="log")
+
+anova(fit.p, fit.pzif, fit.zifnb, fit.nb)
+lrtest(fit.p, fit.pzif, fit.zifnb, fit.nb)
+AIC(fit.p, fit.pzif, fit.zifnb, fit.nb) 
+```
+
+Comments: 
+
+- This analysis suggest that Negative Binomial model is a better option for modeling Malaria positivity data over time. The AIC is lower (by far) in the Negative Binomial model. 
+
+\newpage
+
+# Analysis of Deviance for Negative Binomial
+
+```{r}
+f1 <- glm.nb(Count ~ AgeGroup * Site, data = mod1.data)
+anova(f1)
+#Not significant interaction
+
+f2 <- glm.nb(Count ~ AgeGroup * Site, data = mod2.data)
+anova(f2)
+#Significant interaction
+
+f3 <- glm.nb(Count ~ AgeGroup * Season, data = mod1.data)
+anova(f3)
+#Not significant interaction
+
+f4 <- glm.nb(Count ~ AgeGroup * Season, data = mod2.data)
+anova(f4)
+#Not significant interaction
+
+```
+
+\newpage
+
+# Model Fitting
+
+## 1. Model with age groups and no climate variables
+
+```{r}
+mod1 <- glmer.nb(Count ~ AgeGroup + Month + (1|Site) + (1|Year), 
+                 data = mod1.data, 
+                 control = glmerControl(optimizer = "bobyqa"))
+#summary(mod1)
+#exp(confint(mod1))
+#lapply(ranef(mod1),exp)
+
+mod2 <- glmer.nb(Count ~ AgeGroup + Month + (1|Site) + (1|Year), 
+                 data = mod2.data, 
+                 control = glmerControl(optimizer = "bobyqa"))
+#summary(mod2)
+#exp(confint(mod2))
+#lapply(ranef(mod2),exp)
+```
+
+# Model with age groups and climate variables
+
+```{r}
+mod3 <- glmer.nb(Count ~ AgeGroup + Month + (1|Site) + (1|Year) + 
+                   Mean_Temp + Lag1_Temp + Lag2_Temp + 
+                   Mean_Prec + Lag1_Prec + Lag2_Prec, 
+                 data = mod1.data, 
+                 control = glmerControl(optimizer = "bobyqa",
+                                        optCtrl=list(maxfun=2e5)))
+#summary(mod3)
+
+#data.frame(
+#  estimate = exp(summary(mod3)$coefficient[,1]),
+#  lower = exp(summary(mod3)$coefficient[,1] - #summary(mod3)$coefficient[,2]*1.96),
+#  upper = exp(summary(mod3)$coefficient[,1] + #summary(mod3)$coefficient[,2]*1.96),
+#  pval = summary(mod3)$coefficient[,4])
+
+
+mod4 <- glmer.nb(Count ~ AgeGroup + Month + (1|Site) + (1|Year) + 
+                   Mean_Temp + Lag1_Temp + Lag2_Temp + 
+                   Mean_Prec + Lag1_Prec + Lag2_Prec,  
+                 data = mod2.data, 
+                 control = glmerControl(optimizer = "bobyqa",
+                                        optCtrl=list(maxfun=2e5)))
+#summary(mod4)
+
+#data.frame(
+#  estimate = exp(summary(mod4)$coefficient[,1]),
+#  lower = exp(summary(mod4)$coefficient[,1] - #summary(mod4)$coefficient[,2]*1.96),
+#  upper = exp(summary(mod4)$coefficient[,1] + #summary(mod4)$coefficient[,2]*1.96),
+#  pval = summary(mod4)$coefficient[,4])
+```
+
+
+\newpage
+
+## 2. A subgroup analysis focusing on 6+ (and for in 6-15)
+
+```{r}
+mod5.data <- analysis.data[analysis.data$AgeGroup == ">5 years old",]
+mod5.data$Season <- factor(mod5.data$Season, 
+                           levels = c("Dry S1", 
+                                      "Heavy rain", 
+                                      "Dry S2", 
+                                      "Moderate rain", 
+                                      "Dry S3"))
+
+mod5 <- glmer.nb(Count ~ Month + (1|Site) + (1|Year) + 
+                   Mean_Temp + Lag1_Temp + Lag2_Temp + 
+                   Mean_Prec + Lag1_Prec + Lag2_Prec, 
+                 data = mod5.data, 
+                 control = glmerControl(optimizer = "Nelder_Mead",
+                                        optCtrl=list(maxfun=2e5)))
+#summary(mod5)
+#
+#data.frame(
+#  estimate = exp(summary(mod5)$coefficient[,1]),
+#  lower = exp(summary(mod5)$coefficient[,1] - #summary(mod5)$coefficient[,2]*1.96),
+#  upper = exp(summary(mod5)$coefficient[,1] + #summary(mod5)$coefficient[,2]*1.96),
+#  pval = summary(mod5)$coefficient[,4])
+
+
+mod6.data <- analysis.data[analysis.data$AgeGroup == "6-15 years old",]
+mod6.data$Season <- factor(mod6.data$Season, 
+                           levels = c("Dry S1", 
+                                      "Heavy rain", 
+                                      "Dry S2", 
+                                      "Moderate rain", 
+                                      "Dry S3"))
+
+mod6 <- glmer.nb(Count ~ Month + (1|Site) + (1|Year) + 
+                   Mean_Temp + Lag1_Temp + Lag2_Temp + 
+                   Mean_Prec + Lag1_Prec + Lag2_Prec, 
+                 data = mod6.data, 
+                 control = glmerControl(optimizer = "Nelder_Mead",
+                                        optCtrl=list(maxfun=2e5)))
+#summary(mod6)
+#
+#data.frame(
+#  estimate = exp(summary(mod6)$coefficient[,1]),
+#  lower = exp(summary(mod6)$coefficient[,1] - #summary(mod6)$coefficient[,2]*1.96),
+#  upper = exp(summary(mod6)$coefficient[,1] + #summary(mod6)$coefficient[,2]*1.96),
+#  pval = summary(mod6)$coefficient[,4])
+
+```
+
+\newpage
+
+## 3. A change model where we split the year into early months and late months by using high precipitation season as the cutoff value. 
+
+```{r}
+# adding indicator for after precipitation months 
+analysis.data$Post.High.Prec <- ifelse(analysis.data$Month %in% 1:4, 0, 1)
+analysis.data$Post.High.Prec <- as.factor(analysis.data$Post.High.Prec)
+
+# Subgroup analysis with high precipitation indicator
+mod7b.data <- analysis.data[analysis.data$AgeGroup %in% c("<=5 years old",
+                                                          ">5 years old"),]
+
+mod7 <- glmer.nb(Count ~ AgeGroup + Month + Post.High.Prec + 
+                   (1|Site) + (1|Year), 
+                 data = mod7b.data, 
+                 control = glmerControl(optimizer = "Nelder_Mead",
+                                        optCtrl=list(maxfun=2e5)))
+#summary(mod7)
+#
+#data.frame(
+#  estimate = exp(summary(mod7)$coefficient[,1]),
+#  lower = exp(summary(mod7)$coefficient[,1] - #summary(mod7)$coefficient[,2]*1.96),
+#  upper = exp(summary(mod7)$coefficient[,1] + #summary(mod7)$coefficient[,2]*1.96),
+#  pval = summary(mod7)$coefficient[,4])
+
+mod8b.data <- analysis.data[analysis.data$AgeGroup %in% c("<=5 years old",
+                                                          "6-15 years old"),]
+
+mod8 <- glmer.nb(Count ~ AgeGroup + Month + Post.High.Prec + 
+                   (1|Site) + (1|Year), 
+                 data = mod8b.data, 
+                 control = glmerControl(optimizer = "Nelder_Mead",
+                                        optCtrl=list(maxfun=2e5)))
+#summary(mod8)
+#
+#data.frame(
+#  estimate = exp(summary(mod8)$coefficient[,1]),
+#  lower = exp(summary(mod8)$coefficient[,1] - #summary(mod8)$coefficient[,2]*1.96),
+#  upper = exp(summary(mod8)$coefficient[,1] + #summary(mod8)$coefficient[,2]*1.96),
+#  pval = summary(mod8)$coefficient[,4])
+
+
+# adding other climate measures
+mod7.data <- analysis.data[analysis.data$AgeGroup == ">5 years old",]
+mod9 <- glmer.nb(Count ~ Month + Post.High.Prec + (1|Site) + (1|Year) + 
+                   Mean_Temp + Lag1_Temp + Lag2_Temp + 
+                   Mean_Prec + Lag1_Prec + Lag2_Prec, 
+                 data = mod7.data, 
+                 control = glmerControl(optimizer = "Nelder_Mead",
+                                        optCtrl=list(maxfun=2e5)))
+#summary(mod9)
+#
+#data.frame(
+#  estimate = exp(summary(mod9)$coefficient[,1]),
+#  lower = exp(summary(mod9)$coefficient[,1] - #summary(mod9)$coefficient[,2]*1.96),
+#  upper = exp(summary(mod9)$coefficient[,1] + #summary(mod9)$coefficient[,2]*1.96),
+#  pval = summary(mod9)$coefficient[,4])
+
+
+
+mod8.data <- analysis.data[analysis.data$AgeGroup == "6-15 years old",]
+mod10 <- glmer.nb(Count ~ Month + Post.High.Prec + (1|Site) + (1|Year) + 
+                   Mean_Temp + Lag1_Temp + Lag2_Temp + 
+                   Mean_Prec + Lag1_Prec + Lag2_Prec, 
+                 data = mod8.data, 
+                 control = glmerControl(optimizer = "Nelder_Mead",
+                                        optCtrl=list(maxfun=2e5)))
+#summary(mod10)
+#
+#data.frame(
+#  estimate = exp(summary(mod10)$coefficient[,1]),
+#  lower = exp(summary(mod10)$coefficient[,1] - #summary(mod10)$coefficient[,2]*1.96),
+#  upper = exp(summary(mod10)$coefficient[,1] + #summary(mod10)$coefficient[,2]*1.96),
+#  pval = summary(mod10)$coefficient[,4])
+
+
+```
+
+
+# Visualization of Results
+
+```{r}
+
+get_plot <- function(object = mod1){
+  
+  df <- data.frame(
+    estimate = exp(summary(object)$coefficient[-1,1]),
+    lower = exp(summary(object)$coefficient[-1,1] - summary(object)$coefficient[-1,2]*1.96),
+    upper = exp(summary(object)$coefficient[-1,1] + summary(object)$coefficient[-1,2]*1.96),
+    pval = summary(object)$coefficient[-1,4])
+  labs <- labels(summary(object)$coefficient)[[1]][-1]
+  
+  p <- ggplot(df, aes(x = labs, y = estimate))+
+  geom_errorbar(aes(ymax = upper, ymin = lower), width = .20)+
+  geom_point()+
+  geom_hline(yintercept =  1, linetype = "dotted", col = "red")+
+  labs(x = "Variable", y = "Effect (95% CI)", 
+       title = "Estimated Effects in the Number of Malaria Cases")+
+  scale_x_discrete(labels = label_wrap_gen(10))
+  
+}
+
+
+p1 <- get_plot(object = mod1)
+p2 <- get_plot(object = mod2)
+p3 <- get_plot(object = mod3)
+p4 <- get_plot(object = mod4)
+p5 <- get_plot(object = mod5)
+p6 <- get_plot(object = mod6)
+p7 <- get_plot(object = mod7)
+p8 <- get_plot(object = mod8)
+
+ggarrange(p1,p2,p3,p4,
+          nrow = 2, ncol = 2, 
+          common.legend = TRUE,
+          labels = c("M1", "M2", "M3", "M4"))
+
+ggarrange(p5,p6,p7,p8,
+          nrow = 2, ncol = 2, 
+          common.legend = TRUE,
+          labels = c("M5", "M6", "M7", "M8"))
+
+
+```
+
+
+# Testing for Overdispersion
+
+```{r}
+test_overdispersion <- function(data){
+  m <- glmer(Count ~ (1|Site) + (1|Year), 
+      data = data, family = poisson,
+      control = glmerControl(optimizer = "bobyqa"))
+  performance::check_overdispersion(m)
+}
+
+test_overdispersion(data=mod1.data)
+test_overdispersion(data=mod2.data)
+test_overdispersion(data=mod5.data)
+test_overdispersion(data=mod6.data)
+test_overdispersion(data=mod7.data)
+test_overdispersion(data=mod8.data)
+test_overdispersion(data=mod7b.data)
+test_overdispersion(data=mod8b.data)
+```
+
+
+# Model Validation / Performance
+
+```{r}
+performance::model_performance(mod1)
+performance::model_performance(mod2)
+performance::model_performance(mod3)
+performance::model_performance(mod4)
+performance::model_performance(mod5)
+performance::model_performance(mod6)
+performance::model_performance(mod7)
+performance::model_performance(mod8)
+```
+
+
+
+
+
+
+
